@@ -1,0 +1,384 @@
+---
+title: "Research Analyst III"
+author: "Ian Stavros"
+date: "2025-03-06"
+output: word_document
+---
+Below is a list of the dependencies I used for the code
+```{r setup, include=FALSE}
+#install dependencies 
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(car)
+library(rstatix)
+library(broom)
+library(knitr)
+library(gt)
+library(webshot2)
+```
+
+First, I need to import the data to work with:
+```{r, include=TRUE}
+#Import the data to work with
+historical_personal_income_tax_return_data <- read.csv("./data/Historical_personal_income_tax_return_statistics_by_county_and_tax_year_20250306.csv", stringsAsFactors = FALSE)
+```
+
+Next, I determined which variables I wanted to work with, After Looking at the table I decided that a good set to show trends over time would be:s
+```{r, include=TRUE}
+
+variable_table <- data.frame(
+  Trend_Variables = c("Tax Year"),
+  Regional = c("County"),
+  "Breakdown Variables" = c("Filer Types % (Single, Joint, Separate)", "Total Exemptions in Thousands", "Average Exemptions Per Return", "Total Credits", "Average Credit Dollars")
+)
+
+kable(variable_table)
+```
+
+Below is the generation of the data set's I will be working with. Filer Type, Exemptions and Credits
+```{r, include=TRUE}
+# Select only necessary columns for return types
+filtered_data <- historical_personal_income_tax_return_data %>%
+  select(Tax.Year, County, Number.of.Returns, Return.Type..Single...., Return.Type..Joint....., Return.Type..Separate....)
+
+grouped_data <- filtered_data %>%
+  group_by(County) %>%
+  arrange(Tax.Year, .by_group = TRUE)
+
+formatted_data <- filtered_data %>%
+  pivot_longer(cols = c(Return.Type..Single...., Return.Type..Joint....., Return.Type..Separate....), 
+               names_to = "Return.Type", 
+               values_to = "Percentage") %>%
+  mutate(Return.Type = case_when(
+    Return.Type == "Return.Type..Single...." ~ "Single %",
+    Return.Type == "Return.Type..Joint....." ~ "Joint %",
+    Return.Type == "Return.Type..Separate...." ~ "Separated %"
+  ))
+
+# Group data by county and tax year, then extrapolate the average total exemptions and exeemptions per return.
+exemptions_data <- historical_personal_income_tax_return_data %>%
+  group_by(County, Tax.Year) %>%
+  summarise(
+    Average_Exemptions = mean(Average.Number.of.Exemptions, na.rm = TRUE),
+    Total_Exemptions = sum(Total.Number.of.Exemptions..thousands.of.dollars., na.rm = TRUE),
+    Total_Returns = sum(Number.of.Returns, na.rm = TRUE)
+  ) %>%
+  mutate(
+    Exemption_Value_Per_Filing = Total_Exemptions * 1000 / Total_Returns,
+    Exemption_Value_Per_Filing_Per_Exemption = Exemption_Value_Per_Filing/Average_Exemptions
+  )
+
+#collecting the credits data
+credits_data <- historical_personal_income_tax_return_data %>%
+  group_by(County, Tax.Year) %>%
+  summarise(
+    Total_Credits_In_Thousands = Total.Credits..thousands.of.dollars.,
+    Average_Credits_dollars = Average.Credits..dollars.
+  )
+```
+
+Next I generated a breakdown of for each variable into a graph to show me trends over time.
+```{r, include=TRUE}
+generate_single_line_graph <- function(title, data_frame, x_axis_title, x_values, y_axis_title, y_values) {
+  line_graph <- ggplot(data_frame, aes(x = .data[[x_values]], y = .data[[y_values]])) +
+    geom_line(size = 1, color = "blue") +
+    geom_point(size = 2, color = "lightgrey") +  # Removed extra comma
+    labs(title = title,
+         x = x_axis_title,
+         y = y_axis_title) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(color = "lightgrey"),
+      axis.title = element_text(color = "lightgrey"),
+      axis.text = element_text(color = "lightgrey"),
+      legend.title = element_text(color = "lightgrey"),
+      legend.text = element_text(color = "lightgrey")
+    )
+  return(line_graph)
+}
+
+# Get a list of unique counties
+unique_counties <- unique(formatted_data$County)
+
+# Loop through each county and generate a separate plot
+for (county in unique_counties) {
+  filer_type_county_data <- formatted_data %>% filter(County == county)
+  exemption_county_data <- exemptions_data %>% filter(County == county)
+  credits_county_data <- credits_data %>% filter(County == county)
+  
+  # Generate plot for this county
+  filer_type_plot_over_time <- ggplot(filer_type_county_data, aes(x = Tax.Year, y = Percentage, color = Return.Type, group = Return.Type)) +
+    geom_line(size = 1) +
+    geom_point(size = 2) +
+    labs(title = paste("Filing Status Trends for", county),
+         x = "Tax Year",
+         y = "Percentage of Returns",
+         color = "Filing Type") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(color = "lightgrey"),
+      axis.title = element_text(color = "lightgrey"),
+      axis.text = element_text(color = "lightgrey"),
+      legend.title = element_text(color = "lightgrey"),
+      legend.text = element_text(color = "lightgrey")
+    )
+
+  returns_title = paste("Total Tax Returns in", county)
+  returns_plot_over_time <- generate_single_line_graph(
+    title = returns_title,
+    data_frame = filer_type_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Total Number of Returns",
+    y_values = "Number.of.Returns"
+  )
+  
+  #Generate Exemption Data Plots Over Time
+  total_exemption_title = paste("Total $ Exemptions per year in", county)
+  total_exemption_plot_over_time <- generate_single_line_graph(
+    title = total_exemption_title,
+    data_frame = exemption_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Exemptions Total (in thousands)",
+    y_values = "Total_Exemptions"
+  )
+  
+  exemption_total_per_return_title = paste("Exemption Total per Tax Return in", county)
+  exemption_value_per_filing_plot_over_time <- generate_single_line_graph(
+    title = exemption_total_per_return_title,
+    data_frame = exemption_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Dollar Value of Exemptions per Return",
+    y_values = "Exemption_Value_Per_Filing"
+  )
+  
+  average_exemption_title = paste("Average Exemptions per Return in", county)
+  average_exemption_plot_over_time <- generate_single_line_graph(
+    title = average_exemption_title,
+    data_frame = exemption_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Avg Exemptions Per Return",
+    y_values = "Average_Exemptions"
+  )
+  
+  average_exemption_value_tile = paste("Average Dollar Value per Exemption per Return in", county)
+  average_exemption_value_per_return_over_time <- generate_single_line_graph(
+    title = average_exemption_value_tile,
+    data_frame = exemption_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Average Dollar Value per Exemption",
+    y_values = "Exemption_Value_Per_Filing_Per_Exemption"
+  )
+  
+  total_credits_title <- paste0("Total Credits per Return in", county)
+  total_credits_plot_over_time <- average_exemption_value_per_return_over_time <- generate_single_line_graph(
+    title = total_credits_title,
+    data_frame = credits_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Credit Total (in thousands)",
+    y_values = "Total_Credits_In_Thousands"
+  )
+  
+  #Generate Credit Plots Over Time
+  average_credits_title = paste("Average Credits per Return in", county)
+  average_credits_plot_over_time <- average_exemption_value_per_return_over_time <- generate_single_line_graph(
+    title = average_credits_title,
+    data_frame = credits_county_data,
+    x_axis_title = "Tax Year",
+    x_values = "Tax.Year",
+    y_axis_title = "Average Dollar Value per Credits",
+    y_values = "Average_Credits_dollars"
+  )
+}
+```
+
+These graphs can be seen at:  
+graph_repo: [https://drive.google.com/drive/folders/1aSyRIw5MpgNxcNRl-MSDCO5Cfi69lv9L?usp=sharing](https://drive.google.com/drive/folders/1aSyRIw5MpgNxcNRl-MSDCO5Cfi69lv9L?usp=sharing)  
+```{r, include=FALSE}
+  graph_path =  paste0("./data/plots/", county)
+  if (!dir.exists(graph_path)) {
+    dir.create(graph_path, recursive = TRUE)
+  }
+  
+  ggsave(filename = paste0(returns_title,'.png'), path = graph_path , plot = returns_plot_over_time)
+  ggsave(filename = paste0(county,'.png'), path = graph_path , plot = filer_type_plot_over_time)
+  ggsave(filename = paste0(total_exemption_title,'.png'), path = graph_path , plot = total_exemption_plot_over_time)
+  ggsave(filename = paste0(exemption_total_per_return_title,'.png'), path = graph_path , plot = exemption_value_per_filing_plot_over_time)
+  ggsave(filename = paste0(average_exemption_title,'.png'), path = graph_path , plot = average_exemption_plot_over_time)
+  ggsave(filename = paste0(average_exemption_value_tile,'.png'), path = graph_path , plot = average_exemption_value_per_return_over_time)
+  ggsave(filename = paste0(total_credits_title,'.png'), path = graph_path , plot = total_credits_plot_over_time)
+  ggsave(filename = paste0(average_credits_title,'.png'), path = graph_path , plot = average_credits_plot_over_time)
+```
+
+Based on the graphs of the Total Returns there downward trends that we will want to capture.
+The function belows captures the downward trend and determines that if there is any reverse 
+in the trend that it is statisically significant before determining that the trend has ended.  
+``` {r, include=TRUE}
+determine_trend_stats <- function(county, data, start_year, end_year, trend_type, trend_focus) {
+  # Build dynamic column names
+  p_value_key <- ifelse(is.na(trend_type), "p_value", paste0("p_value_", trend_type))
+  slope_key <- ifelse(is.na(trend_type), "slope", paste0("slope_", trend_type))
+  
+  # Create a default tibble with the proper column names
+  return_data_frame <- tibble(
+    !!p_value_key := NA,
+    !!slope_key := NA
+  )
+  
+  if (!is.na(start_year) && !is.na(end_year)) {
+    window_data <- data %>%
+      filter(County == county, Tax.Year >= start_year, Tax.Year <= end_year)
+    
+    if (nrow(window_data) >= 2) {
+      model <- lm(Total_Returns ~ Tax.Year, data = window_data)
+      coefficients <- summary(model)$coefficients
+      
+      return_data_frame <- tibble(
+        !!p_value_key := coefficients["Tax.Year", "Pr(>|t|)"],
+        !!slope_key := coefficients["Tax.Year", trend_focus]
+      )
+    }
+  }
+  return(return_data_frame)
+}
+
+
+get_longest_trend <- function(data, years, values, trend_type, look_ahead = 3, p_threshold = 0.05) {
+  n <- length(values)
+  longest_trend <- 0
+  trend_start <- NA
+  trend_end <- NA
+  current_trend_start <- NA
+  
+  # Define the primary trend condition: for a "downward" trend, each value must be lower than its predecessor.
+  primary_condition <- if (trend_type == "downward") `<` else `>`
+  
+  i <- 2
+  while (i <= n) {
+    if (primary_condition(values[i], values[i - 1])) {
+      # Continuing primary trend: initialize the trend start if needed.
+      if (is.na(current_trend_start)) {
+        current_trend_start <- years[i - 1]
+      }
+      current_length <- years[i] - current_trend_start
+      if (current_length > longest_trend) {
+        longest_trend <- current_length
+        trend_start <- current_trend_start
+        trend_end <- years[i]
+      }
+      i <- i + 1
+    } else {
+      # A reversal is detected at index i.
+      # Look ahead up to look_ahead years to see if there are two consecutive reversal years.
+      reversal_indices <- c()
+      for (j in i:min(n, i + look_ahead - 1)) {
+        if (!primary_condition(values[j], values[j - 1])) {
+          # Only count indices if they are consecutive.
+          if (length(reversal_indices) == 0 || j == tail(reversal_indices, 1) + 1) {
+            reversal_indices <- c(reversal_indices, j)
+          } else {
+            break  # Non-consecutive break in reversal sequence.
+          }
+        } else {
+          break  # Encountered a value that resumes the primary trend.
+        }
+      }
+      
+      if (length(reversal_indices) >= 2) {
+        # Two or more consecutive reversal years are available.
+        reversal_years <- years[reversal_indices]
+        window_data <- data %>% filter(County == county, Tax.Year %in% reversal_years)
+        if (nrow(window_data) >= 2) {
+          model <- lm(Total_Returns ~ Tax.Year, data = window_data)
+          p_value <- summary(model)$coefficients["Tax.Year", "Pr(>|t|)"]
+          if (!is.na(p_value) && p_value < p_threshold) {
+            # The opposite trend in this reversal window is statistically significant.
+            # End the primary trend at the last year before the reversal window began.
+            break
+          } else {
+            # The reversal window, though two years long, is not statistically significant.
+            # Skip the reversal window and continue the primary trend.
+            i <- tail(reversal_indices, 1) + 1
+            next
+          }
+        } else {
+          # Insufficient data in the reversal window—skip these years.
+          i <- tail(reversal_indices, 1) + 1
+          next
+        }
+      } else {
+        # Only one reversal year is found: treat it as an outlier and continue the primary trend.
+        i <- i + 1
+      }
+      # Reset the current trend start because the primary trend was interrupted.
+      current_trend_start <- NA
+    }
+  }
+  
+  return(data.frame(
+    window = paste(trend_start, '-', trend_end),
+    trend_start = trend_start,
+    trend_end = trend_end,
+    length = longest_trend
+  ))
+}
+
+
+downtrend_summary <- exemptions_data %>%
+  arrange(County, Tax.Year) %>%
+  group_by(County) %>%
+  summarise(
+    res = list(get_longest_trend(exemptions_data, Tax.Year, Total_Returns, 'downward'))
+  ) %>%
+  unnest(res)
+
+downtrend_summary_signif <- downtrend_summary %>%
+  rowwise() %>%
+  mutate(
+    trend_down = list(determine_trend_stats(County, exemptions_data, trend_start, trend_end, NA, "Estimate"))
+  ) %>%
+  unnest(c(trend_down), names_repair = "unique") %>%
+  ungroup() %>%
+  filter(
+    !is.na(p_value), p_value < 0.05, slope < 0,
+  ) %>%
+  select(County, window, p_value, slope)
+
+kable(downtrend_summary_signif)
+```
+
+Next, we will determine if any of the filing types, total filings or average exemptions has a statistical impact on the average exemptions by running linear regression model.
+```{r,include=TRUE}
+# Create a dataset combining exemptions and number of filings
+exemptions_with_filing_type <- historical_personal_income_tax_return_data %>%
+  group_by(County, Tax.Year) %>%
+  summarise(
+    Average_Exemptions = mean(Average.Number.of.Exemptions, na.rm = TRUE),
+    Total_Filings = sum(Number.of.Returns, na.rm = TRUE),
+    Single_Percent = mean(Return.Type..Single...., na.rm = TRUE),
+    Joint_Percent = mean(Return.Type..Joint....., na.rm = TRUE),
+    Separate_Percent = mean(Return.Type..Separate...., na.rm = TRUE),
+    Exemptions_Total_Thousands = sum(Total.Number.of.Exemptions..thousands.of.dollars., na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Linear regression including filing type
+lm_model_filing <- lm(Average_Exemptions ~ Tax.Year + Total_Filings + Single_Percent + Joint_Percent + Separate_Percent, 
+                       data = exemptions_with_filing_type)
+
+summary(lm_model_filing)  # Reports p-values
+```
+# Conclusions
+The regression model from the previous slide indicates that over time, Average Exemptions tend to increase. However, higher percentages of Single and Joint filings are associated with a decrease in Average Exemptions, while Separate filings do not show a significant impact. Despite these findings, the model's R² of 0.79 suggests that about 21% of the variability in Average Exemptions remains unexplained—highlighting the need for further research to identify additional contributing factors.     
+
+## Further Analysis   
+- A more granular analysis is currently limited by the lack of detailed return-level data. Having access to this information would enable us to pinpoint the specific job sectors most affected in each county and explain why some counties took longer to recover from the 2008 financial crisis.  
+- To gain a deeper understanding of revenue dynamics, I propose merging this data with datasets on Social Determinants of Health (SDOH), SOGI, and REALD. Integrating these sources may reveal key indicators that can provide a more detailed understanding of where revenue is being collected, from whom, and why, thereby enriching our overall analysis.
